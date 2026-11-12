@@ -35,30 +35,18 @@
     <div id="tooltip" aria-hidden="true"></div>
 
     <div id="hint">
-      <span>Click the <b>laptop</b> to open it</span><span class="sep">·</span><span>Pick up a <b>document</b> to read about a project</span>
+      <span>Click the <b>laptop</b> to open it</span><span class="sep">·</span><span>Click a <b>folder</b> or a <b>page</b> to read about a project</span>
     </div>
 
-    <!-- Paper sheet with project details -->
-    <div id="panel" role="dialog" aria-modal="true" aria-label="Project details">
-      <article class="sheet">
-        <button class="sheet-close" aria-label="Put it back">✕</button>
-        <div class="sheet-body"></div>
-      </article>
+    <!-- Document sheet, aligned over the paper on the desk -->
+    <div id="panel" role="dialog" aria-modal="true" aria-label="Document">
+      <div class="scrim"></div>
+      <article class="sheet"><div class="sheet-body"></div></article>
+      <button class="sheet-close" aria-label="Put it back">Put it back <kbd>Esc</kbd></button>
     </div>
 
     <!-- Laptop OS, positioned over the 3D display -->
-    <div id="os" aria-label="Portfolio OS">
-      <div class="os-screen">
-        <div class="os-menubar">
-          <span class="os-logo">●</span><b>Amaculis</b><button class="os-menu" data-open="terminal">Terminal</button><button class="os-menu" data-open="about">About</button>
-          <span class="spacer"></span><span class="os-clock"></span>
-          <button class="os-exit" title="Back to desk (Esc)">⏏ Back to desk</button>
-        </div>
-        <div class="os-desktop">
-          <nav class="os-icons" aria-label="Projects"></nav>
-        </div>
-      </div>
-    </div>
+    <div id="os" aria-label="Portfolio OS"><div class="os-screen"></div></div>
 
     <noscript>This CV is an interactive 3D page and needs JavaScript. Projects: https://github.com/Amaculis</noscript>
     <script type="module" src="/src/main.ts"></script>

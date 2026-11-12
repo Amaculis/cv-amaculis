@@ -20,7 +20,17 @@ export interface Project {
   onDesk?: 'folder' | 'paper';
   accent: string;
   icon: string;
+  /** Finder tags in the laptop OS; colours are defined in TAGS. */
+  tags: string[];
 }
+
+export const TAGS: Record<string, string> = {
+  Security: '#ff453a',
+  Optimisation: '#ff9f0a',
+  Research: '#30d158',
+  Blockchain: '#bf5af2',
+  Backend: '#0a84ff',
+};
 
 export const profile = {
   // TODO: replace with your real name if you want it on the page.
@@ -51,6 +61,7 @@ const img = (file: string) => `${import.meta.env.BASE_URL}projects/${file}`;
 export const projects: Project[] = [
   {
     id: 'agentwarden',
+    tags: ['Security'],
     title: 'AgentWarden',
     tagline: 'A semantic firewall between your AI coding agent and your machine.',
     description: [
@@ -85,6 +96,7 @@ export const projects: Project[] = [
   },
   {
     id: 'fleet-planner',
+    tags: ['Backend', 'Security'],
     title: 'Fleet Planner',
     tagline: 'Trip planning and bus/driver assignment for a passenger bus company.',
     description: [
@@ -113,6 +125,7 @@ export const projects: Project[] = [
   },
   {
     id: 'food-delivery',
+    tags: ['Optimisation', 'Backend'],
     title: 'Food Delivery Optimizer',
     tagline: 'Vehicle routing on real Latvian roads with a constraint solver.',
     description: [
@@ -135,6 +148,7 @@ export const projects: Project[] = [
   },
   {
     id: 'did-revocation',
+    tags: ['Research', 'Security'],
     title: 'DID Offline Revocation',
     tagline: 'Gossip-based credential revocation for offline verifiers. Master’s thesis research.',
     description: [
@@ -157,6 +171,7 @@ export const projects: Project[] = [
   },
   {
     id: 'pharma-chain',
+    tags: ['Blockchain', 'Backend'],
     title: 'Pharma Integrity Ledger',
     tagline: 'Blockchain auditing of pharmaceutical manufacturing records.',
     description: [
@@ -177,6 +192,7 @@ export const projects: Project[] = [
   },
   {
     id: 'vrp-annealing',
+    tags: ['Optimisation', 'Research'],
     title: 'VRP · Simulated Annealing',
     tagline: 'Fuel-limited vehicle routing solved with a hand-written metaheuristic.',
     description: [

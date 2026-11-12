@@ -13,6 +13,13 @@ import {
 /** Every clickable object carries `userData.action` on its root group. */
 export type Action = { type: 'laptop' } | { type: 'project'; project: Project } | { type: 'about' };
 
+/** A flat document the camera can fly onto: the mesh's local X is the page width, local -Z points to the top of the page. */
+export interface DocPlane {
+  mesh: THREE.Object3D;
+  w: number;
+  h: number;
+}
+
 const shadowTex = createContactShadowTexture();
 
 /** Soft blob that grounds an object on the desk (cheap contact shadow). */
@@ -216,6 +223,7 @@ const paperBlankMat = new THREE.MeshStandardMaterial({ color: '#f1efe8', roughne
 export function createPaperStack(p: Project, renderer: THREE.WebGLRenderer, sheets = 3) {
   const W = 0.21, H = 0.297;
   const root = new THREE.Group();
+  let top: THREE.Mesh | null = null;
   for (let i = sheets - 1; i >= 0; i--) {
     const isTop = i === 0;
     const mat = isTop
@@ -226,10 +234,12 @@ export function createPaperStack(p: Project, renderer: THREE.WebGLRenderer, shee
     sheet.position.set((Math.random() - 0.5) * 0.008 * i, (sheets - 1 - i) * 0.0006 + 0.0003, (Math.random() - 0.5) * 0.01 * i);
     sheet.rotation.y = (Math.random() - 0.5) * 0.05 * i;
     root.add(sheet);
+    if (isTop) top = sheet;
   }
   enableShadows(root);
   root.add(contactShadow(W * 1.2, H * 1.15, 0.35));
   root.userData.action = { type: 'project', project: p } satisfies Action;
+  root.userData.docPlane = { mesh: top!, w: W, h: H } satisfies DocPlane;
   return root;
 }
 
@@ -238,62 +248,66 @@ export function createPaperStack(p: Project, renderer: THREE.WebGLRenderer, shee
 export function createFolder(p: Project, renderer: THREE.WebGLRenderer) {
   const W = 0.235, H = 0.315, T = 0.0007;
   const root = new THREE.Group();
-  const kraft = new THREE.MeshStandardMaterial({ color: '#d4b27a', roughness: 0.82 });
+  const kraft = new THREE.MeshStandardMaterial({ color: '#d4b27a', roughness: 0.82, side: THREE.DoubleSide });
 
   const back = new THREE.Mesh(new THREE.BoxGeometry(W, T, H), kraft);
   back.position.y = T / 2;
   root.add(back);
 
-  // a couple of documents peeking out
-  const inside1 = new THREE.Mesh(new THREE.BoxGeometry(W - 0.02, 0.0004, H - 0.012), paperBlankMat);
-  inside1.position.set(0.012, T + 0.0005, -0.008);
-  inside1.rotation.y = 0.03;
-  root.add(inside1);
-  const inside2 = new THREE.Mesh(
-    new THREE.BoxGeometry(W - 0.02, 0.0004, H - 0.012),
-    new THREE.MeshStandardMaterial({ color: '#e9eef2', roughness: 0.9 }),
+  // documents inside: a blank sheet and the printed project one-pager on top
+  const under = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.0003, 0.297), new THREE.MeshStandardMaterial({ color: '#e9eef2', roughness: 0.9 }));
+  under.position.set(-0.004, T + 0.0003, 0.004);
+  under.rotation.y = -0.025;
+  root.add(under);
+  const doc = new THREE.Mesh(
+    curledPaperGeometry(0.21, 0.297, 0.0008, 5),
+    new THREE.MeshStandardMaterial({ map: createPaperTexture(p, renderer), roughness: 0.9, side: THREE.DoubleSide }),
   );
-  inside2.position.set(-0.006, T + 0.0011, -0.014);
-  inside2.rotation.y = -0.025;
-  root.add(inside2);
+  doc.position.set(0.006, T + 0.0007, 0.002);
+  doc.rotation.y = 0.012;
+  root.add(doc);
 
-  // front cover with tab, built from a Shape
+  // front cover on a hinge along the left edge, so it can swing open
+  const cover = new THREE.Group();
+  cover.position.set(-W / 2, T + 0.0019, 0);
+  root.add(cover);
+
   const s = new THREE.Shape();
-  const hw = W / 2, hh = H / 2;
-  s.moveTo(-hw, -hh);
-  s.lineTo(hw, -hh);
-  s.lineTo(hw, hh - 0.012);
-  s.lineTo(-hw + 0.11, hh - 0.012);
-  s.lineTo(-hw + 0.1, hh + 0.008);
-  s.lineTo(-hw + 0.015, hh + 0.008);
-  s.lineTo(-hw + 0.005, hh - 0.012);
-  s.lineTo(-hw, hh - 0.012);
+  const hh = H / 2;
+  s.moveTo(0, -hh);
+  s.lineTo(W, -hh);
+  s.lineTo(W, hh - 0.012);
+  s.lineTo(0.11 + 0.005, hh - 0.012);
+  s.lineTo(0.1 + 0.005, hh + 0.008);
+  s.lineTo(0.02, hh + 0.008);
+  s.lineTo(0.01, hh - 0.012);
+  s.lineTo(0, hh - 0.012);
   s.closePath();
   const front = new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: T, bevelEnabled: false }), kraft);
   front.rotation.x = -Math.PI / 2;
-  front.position.y = T + 0.002;
-  front.rotation.z = 0.006; // a hair open
-  root.add(front);
+  cover.add(front);
 
   const label = new THREE.Mesh(
     new THREE.PlaneGeometry(0.17, 0.066),
     new THREE.MeshStandardMaterial({ map: createFolderLabelTexture(p, renderer), roughness: 0.75 }),
   );
   label.rotation.x = -Math.PI / 2;
-  label.position.set(0, T * 2 + 0.0024, -0.02);
-  root.add(label);
+  label.position.set(W / 2, T + 0.0003, -0.02);
+  cover.add(label);
 
   // red elastic band
   const band = new THREE.Mesh(
     new THREE.BoxGeometry(0.004, 0.0008, H + 0.002),
     new THREE.MeshStandardMaterial({ color: '#9b2a1f', roughness: 0.5 }),
   );
-  band.position.set(W / 2 - 0.03, T * 2 + 0.0026, 0);
-  root.add(band);
+  band.position.set(W - 0.03, T + 0.0005, 0);
+  cover.add(band);
 
   enableShadows(root);
   root.add(contactShadow(W * 1.25, H * 1.15, 0.45));
   root.userData.action = { type: 'project', project: p } satisfies Action;
+  root.userData.docPlane = { mesh: doc, w: 0.21, h: 0.297 } satisfies DocPlane;
+  root.userData.cover = cover;
   return root;
 }
 
@@ -378,6 +392,7 @@ export function createBusinessCard(renderer: THREE.WebGLRenderer) {
   ]);
   card.position.y = 0.0003;
   root.add(card);
+  root.userData.docPlane = { mesh: card, w: 0.085, h: 0.0486 } satisfies DocPlane;
   enableShadows(root);
   root.add(contactShadow(0.1, 0.065, 0.4));
   root.userData.action = { type: 'about' } satisfies Action;

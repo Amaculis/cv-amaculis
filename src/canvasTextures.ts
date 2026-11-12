@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { profile, projects, type Project } from './data';
+import { profile, projects, TAGS, type Project } from './data';
+import { GLYPHS, ICONS, WALLPAPER, docIcon, folderIcon, svgImage } from './os/assets';
 
 const FONT = '"Inter", "Segoe UI", system-ui, -apple-system, sans-serif';
 const SERIF = '"Source Serif 4", Georgia, "Times New Roman", serif';
@@ -62,95 +63,119 @@ function paperGrain(ctx: CanvasRenderingContext2D, w: number, h: number, base: s
 
 /* ---------------------------------------------------------------- laptop screen */
 
-export const SCREEN_W = 1600;
-export const SCREEN_H = 1000;
+// The canvas mirrors the HTML desktop (1280×800 logical) at 1.25× resolution.
+const SW = 1280, SH = 800, SS = 1.25;
 
-export function drawWallpaper(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const g = ctx.createLinearGradient(0, 0, w, h);
-  g.addColorStop(0, '#0f2027');
-  g.addColorStop(0.5, '#203a43');
-  g.addColorStop(1, '#2c5364');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
-  // soft glows
-  const glow = (x: number, y: number, r: number, c: string) => {
-    const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
-    rg.addColorStop(0, c);
-    rg.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = rg;
-    ctx.fillRect(0, 0, w, h);
-  };
-  glow(w * 0.8, h * 0.2, w * 0.5, 'rgba(255,170,90,0.35)');
-  glow(w * 0.15, h * 0.9, w * 0.5, 'rgba(80,160,255,0.25)');
-}
-
-/** Static image of the laptop "desktop" shown on the 3D screen before zooming in. */
+/**
+ * The laptop desktop as seen from the desk: same wallpaper, menu bar, desktop icons and dock
+ * as the interactive OS, so zooming in and swapping to HTML is seamless.
+ * Artwork is SVG, so it is drawn once the images decode; the texture updates itself.
+ */
 export function createScreenTexture(renderer: THREE.WebGLRenderer) {
-  const [c, ctx] = makeCanvas(SCREEN_W, SCREEN_H);
-  drawWallpaper(ctx, SCREEN_W, SCREEN_H);
+  const [c, ctx] = makeCanvas(SW * SS, SH * SS);
+  ctx.scale(SS, SS);
+  ctx.fillStyle = '#1a1440';
+  ctx.fillRect(0, 0, SW, SH);
+  const tex = toTexture(c, renderer);
 
-  // menu bar
-  ctx.fillStyle = 'rgba(20,20,24,0.55)';
-  ctx.fillRect(0, 0, SCREEN_W, 44);
-  ctx.fillStyle = '#fff';
-  ctx.font = `600 22px ${FONT}`;
-  ctx.textBaseline = 'middle';
-  ctx.fillText(`●  ${profile.handle}`, 24, 22);
-  ctx.font = `400 22px ${FONT}`;
-  ctx.fillText('Terminal    About', 200, 22);
-  ctx.textAlign = 'right';
-  ctx.fillText('Portfolio OS', SCREEN_W - 24, 22);
-  ctx.textAlign = 'left';
+  const featured = projects.filter((p) => p.onDesk);
+  const deskItems = [
+    { svg: folderIcon(), label: 'Projects' },
+    ...featured.map((p) => ({ svg: folderIcon(TAGS[p.tags[0]] ?? '#3d9df3'), label: p.title })),
+    { svg: docIcon('TXT', '#8e8e93'), label: 'About me.txt' },
+    { svg: docIcon('VCF', '#a2845e'), label: 'Contact.vcf' },
+  ];
+  const dockSvgs = [ICONS.projects, ICONS.notes, ICONS.contacts, ICONS.terminal, ICONS.github, ICONS.trash];
 
-  // welcome window
-  const wx = 470, wy = 210, ww = 820, wh = 460;
-  ctx.shadowColor = 'rgba(0,0,0,0.45)';
-  ctx.shadowBlur = 50;
-  ctx.shadowOffsetY = 20;
-  ctx.fillStyle = 'rgba(250,250,252,0.96)';
-  roundRect(ctx, wx, wy, ww, wh, 22);
-  ctx.fill();
-  ctx.shadowColor = 'transparent';
-  ['#ff5f57', '#febc2e', '#28c840'].forEach((col, i) => {
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.arc(wx + 34 + i * 30, wy + 32, 9, 0, Math.PI * 2);
-    ctx.fill();
-  });
-  ctx.fillStyle = '#111';
-  ctx.font = `700 64px ${FONT}`;
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText(`Hi, I'm ${profile.name}.`, wx + 60, wy + 150);
-  ctx.fillStyle = '#555';
-  ctx.font = `500 30px ${FONT}`;
-  ctx.fillText(profile.role, wx + 60, wy + 200);
-  ctx.fillStyle = '#333';
-  ctx.font = `400 26px ${FONT}`;
-  wrapText(ctx, profile.summary, wx + 60, wy + 270, ww - 120, 38, 3);
-  ctx.fillStyle = '#0a84ff';
-  roundRect(ctx, wx + 60, wy + 370, 300, 56, 28);
-  ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.font = `600 24px ${FONT}`;
-  ctx.fillText('Click to open  →', wx + 100, wy + 406);
+  Promise.all([
+    svgImage(WALLPAPER, SW * SS, SH * SS),
+    ...deskItems.map((d) => svgImage(d.svg, 128, 104)),
+    ...dockSvgs.map((d) => svgImage(d, 128, 128)),
+    svgImage(GLYPHS.wifi.replace('currentColor', '#fff').replaceAll('currentColor', '#fff'), 34, 28),
+    svgImage(GLYPHS.battery.replaceAll('currentColor', '#fff'), 50, 24),
+  ])
+    .then(([wall, ...rest]) => {
+      const deskImgs = rest.slice(0, deskItems.length);
+      const dockImgs = rest.slice(deskItems.length, deskItems.length + dockSvgs.length);
+      const [wifi, batt] = rest.slice(deskItems.length + dockSvgs.length);
 
-  // desktop icons
-  ctx.textAlign = 'center';
-  projects.forEach((p, i) => {
-    const x = 90;
-    const y = 110 + i * 140;
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    roundRect(ctx, x - 44, y, 88, 88, 20);
-    ctx.fill();
-    ctx.font = `48px ${FONT}`;
-    ctx.fillStyle = '#fff';
-    ctx.fillText(p.icon, x, y + 62);
-    ctx.font = `500 18px ${FONT}`;
-    ctx.fillText(p.title.length > 16 ? p.title.slice(0, 15) + '…' : p.title, x, y + 112);
-  });
-  ctx.textAlign = 'left';
+      ctx.drawImage(wall, 0, 0, SW, SH);
 
-  return toTexture(c, renderer);
+      // menu bar
+      ctx.fillStyle = 'rgba(30,24,60,0.42)';
+      ctx.fillRect(0, 0, SW, 26);
+      ctx.fillStyle = '#fff';
+      ctx.textBaseline = 'middle';
+      ctx.font = `700 13px ${FONT}`;
+      ctx.fillText('◆', 16, 13);
+      ctx.fillText('Projects', 38, 13);
+      ctx.font = `400 13px ${FONT}`;
+      let x = 112;
+      for (const m of ['File', 'Edit', 'View', 'Go', 'Window', 'Help']) {
+        ctx.fillText(m, x, 13);
+        x += ctx.measureText(m).width + 20;
+      }
+      const d = new Date();
+      const clock = `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '')}  ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+      ctx.textAlign = 'right';
+      ctx.fillText(clock, SW - 92, 13);
+      ctx.textAlign = 'left';
+      ctx.drawImage(batt, SW - 330, 7, 25, 12);
+      ctx.fillText('87%', SW - 300, 13);
+      ctx.drawImage(wifi, SW - 262, 6, 17, 14);
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      roundRect(ctx, SW - 84, 4, 74, 18, 6);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = `600 13px ${FONT}`;
+      ctx.fillText('⏏  Desk', SW - 74, 13);
+
+      // desktop icons, right column
+      ctx.textAlign = 'center';
+      ctx.font = `500 12px ${FONT}`;
+      deskImgs.forEach((im, i) => {
+        const cx = SW - 14 - 46, y = 40 + i * 92;
+        ctx.shadowColor = 'rgba(0,0,0,0.35)';
+        ctx.shadowBlur = 6;
+        ctx.shadowOffsetY = 3;
+        ctx.drawImage(im, cx - 32, y + 4, 64, 52);
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 3;
+        ctx.shadowOffsetY = 1;
+        ctx.fillStyle = '#fff';
+        ctx.fillText(deskItems[i].label, cx, y + 72);
+      });
+      ctx.shadowColor = 'transparent';
+      ctx.textAlign = 'left';
+
+      // dock
+      const n = dockImgs.length, size = 52, gap = 4, pad = 7, sep = 11;
+      const dw = n * size + (n - 1) * gap + pad * 2 + sep;
+      const dx = (SW - dw) / 2, dy = SH - 6 - 66;
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      roundRect(ctx, dx, dy, dw, 66, 20);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      let ix = dx + pad;
+      dockImgs.forEach((im, i) => {
+        if (i === n - 1) {
+          ctx.fillStyle = 'rgba(255,255,255,0.35)';
+          ctx.fillRect(ix + 3, dy + 9, 1, 48);
+          ix += sep;
+        }
+        ctx.drawImage(im, ix, dy + 7, size, size);
+        ix += size + gap;
+      });
+
+      tex.needsUpdate = true;
+    })
+    .catch(() => {
+      /* keep the plain background if an image fails to decode */
+    });
+
+  return tex;
 }
 
 /* ---------------------------------------------------------------- printouts */

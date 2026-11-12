@@ -6,6 +6,7 @@ import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLigh
 import { projects } from './data';
 import {
   type Action,
+  type DocPlane,
   DISPLAY,
   LAPTOP,
   createBusinessCard,
@@ -22,7 +23,8 @@ import { createBokehBackdrop, createDust, createLightShaft, createPipeline, crea
 import { UI } from './ui';
 
 const BASE = import.meta.env.BASE_URL;
-const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// With "reduce motion" on (e.g. Windows animation effects off) only the ambient motion — handheld drift and mouse parallax — is dropped.
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const isTouch = matchMedia('(pointer: coarse)').matches;
 
 type State = 'loading' | 'intro' | 'desk' | 'zooming' | 'laptop' | 'doc';
@@ -49,7 +51,7 @@ const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.01, 2
 
 const ui = new UI({
   onExitLaptop: () => exitLaptop(),
-  onPanelClosed: () => putDocumentBack(),
+  onPanelClosed: () => closeDocument(),
 });
 
 /* ------------------------------------------------------------------ loading */
@@ -182,9 +184,9 @@ const pipeline = createPipeline(renderer, scene, camera, [shaft.mesh, dust.point
 
 /* ------------------------------------------------------------------ camera framing */
 
+const UP = new THREE.Vector3(0, 1, 0);
 const HOME_TARGET = new THREE.Vector3();
 const HOME_DIR = new THREE.Vector3();
-const camTarget = new THREE.Vector3();
 
 /** Landscape: low and photographic. Portrait phones: look down more so the column of objects fits. */
 function updateHome() {
@@ -193,48 +195,125 @@ function updateHome() {
   HOME_TARGET.set(0, portrait ? 0.03 : 0.08, portrait ? 0.17 : -0.07);
 }
 
-function homeDistance() {
+function fovs() {
   const vfov = THREE.MathUtils.degToRad(camera.fov);
-  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
+  return { vfov, hfov: 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect) };
+}
+
+function homeDistance() {
+  const { vfov, hfov } = fovs();
   const [needW, needH] = isPortrait() ? [0.68, 1.24] : [1.26, 0.62];
   return Math.max(needW / 2 / Math.tan(hfov / 2), needH / 2 / Math.tan(vfov / 2));
 }
-const homePosition = () => HOME_TARGET.clone().addScaledVector(HOME_DIR, homeDistance());
 
-/** Camera pose that makes the laptop display fill the viewport. */
-function laptopPose() {
-  const center = new THREE.Vector3();
-  laptop.display.getWorldPosition(center);
-  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(laptop.display.getWorldQuaternion(new THREE.Quaternion()));
-  const vfov = THREE.MathUtils.degToRad(camera.fov);
-  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
-  const margin = innerWidth < 700 ? 1.0 : 1.12;
-  const d = Math.max(DISPLAY.h / 2 / Math.tan(vfov / 2), DISPLAY.w / 2 / Math.tan(hfov / 2)) * margin;
-  return { position: center.clone().addScaledVector(normal, d), target: center };
+interface Pose {
+  pos: THREE.Vector3;
+  target: THREE.Vector3;
+  up: THREE.Vector3;
 }
 
-/** Where the display is on screen, in CSS pixels. */
-function displayRect() {
+const homePose = (): Pose => ({
+  pos: HOME_TARGET.clone().addScaledVector(HOME_DIR, homeDistance()),
+  target: HOME_TARGET.clone(),
+  up: UP.clone(),
+});
+
+/** Distance at which a w×h rectangle fills the view (times margin). */
+function fitDistance(w: number, h: number, margin: number) {
+  const { vfov, hfov } = fovs();
+  return Math.max(h / 2 / Math.tan(vfov / 2), w / 2 / Math.tan(hfov / 2)) * margin;
+}
+
+/** Camera pose that makes the laptop display fill the viewport. */
+function laptopPose(): Pose {
+  const center = laptop.display.getWorldPosition(new THREE.Vector3());
+  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(laptop.display.getWorldQuaternion(new THREE.Quaternion()));
+  const d = fitDistance(DISPLAY.w, DISPLAY.h, innerWidth < 700 ? 1.0 : 1.12);
+  return { pos: center.clone().addScaledVector(normal, d), target: center, up: UP.clone() };
+}
+
+/** Camera straight above a document, rolled so the page reads upright and fills the view. */
+function docPose(plane: DocPlane, margin: number): Pose {
+  plane.mesh.updateWorldMatrix(true, false);
+  const center = plane.mesh.getWorldPosition(new THREE.Vector3());
+  const pageUp = new THREE.Vector3(0, 0, -1).applyQuaternion(plane.mesh.getWorldQuaternion(new THREE.Quaternion()));
+  pageUp.y = 0;
+  pageUp.normalize();
+  const d = fitDistance(plane.w, plane.h, margin);
+  return { pos: center.clone().addScaledVector(UP, d), target: center, up: pageUp };
+}
+const docMargin = (aligned: boolean) => (aligned ? (innerWidth < 700 ? 1.04 : 1.12) : 3.2);
+
+/** Screen-space rectangle (CSS px) of a w×h rectangle lying in a mesh's local XY ('xy') or XZ ('xz') plane. */
+function projectRect(mesh: THREE.Object3D, w: number, h: number, plane: 'xy' | 'xz') {
+  camera.updateMatrixWorld();
+  mesh.updateWorldMatrix(true, false);
   const pts = [
     [-1, -1],
     [1, -1],
     [1, 1],
     [-1, 1],
   ].map(([sx, sy]) => {
-    const v = new THREE.Vector3((sx * DISPLAY.w) / 2, (sy * DISPLAY.h) / 2, 0);
-    laptop.display.localToWorld(v).project(camera);
+    const v = plane === 'xy' ? new THREE.Vector3((sx * w) / 2, (sy * h) / 2, 0) : new THREE.Vector3((sx * w) / 2, 0, (sy * h) / 2);
+    mesh.localToWorld(v).project(camera);
     return { x: ((v.x + 1) / 2) * innerWidth, y: ((1 - v.y) / 2) * innerHeight };
   });
   const xs = pts.map((c) => c.x), ys = pts.map((c) => c.y);
   const l = Math.min(...xs), t = Math.min(...ys);
   return new DOMRect(l, t, Math.max(...xs) - l, Math.max(...ys) - t);
 }
+const displayRect = () => projectRect(laptop.display, DISPLAY.w, DISPLAY.h, 'xy');
 
 updateHome();
 applyLayout();
-camTarget.copy(HOME_TARGET);
-camera.position.copy(homePosition());
-camera.lookAt(camTarget);
+
+/* ------------------------------------------------------------------ camera rig
+   Tweens only ever move `rig` (the base pose). Living motion — parallax, handheld
+   breathing, a glance toward the hovered object — is layered on top every frame,
+   scaled by `rig.idle`, which flights fade out and back in. Nothing snaps. */
+
+const rig = { pos: new THREE.Vector3(), target: new THREE.Vector3(), up: UP.clone(), idle: 0 };
+function setRig(p: Pose) {
+  rig.pos.copy(p.pos);
+  rig.target.copy(p.target);
+  rig.up.copy(p.up);
+}
+setRig(homePose());
+
+let flight: gsap.core.Tween | null = null;
+const smooth = (x: number) => {
+  const t = THREE.MathUtils.clamp(x, 0, 1);
+  return t * t * (3 - 2 * t);
+};
+
+/** Glide the camera to a pose along a gentle arc. The gaze leads the body a little, like a camera operator. */
+function flyTo(to: Pose, duration: number, opts: { idle: number; arc?: number; ease?: string; onComplete?: () => void }) {
+  flight?.kill();
+  const from = { pos: rig.pos.clone(), target: rig.target.clone(), up: rig.up.clone(), idle: rig.idle };
+  const ctrl = from.pos.clone().lerp(to.pos, 0.5).addScaledVector(UP, opts.arc ?? 0);
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  const p = { t: 0 };
+  flight = gsap.to(p, {
+    t: 1,
+    duration, // camera moves are navigation, so they stay even with reduced motion
+    ease: opts.ease ?? 'power2.inOut',
+    onUpdate: () => {
+      const t = p.t;
+      // quadratic Bézier: from → ctrl → to
+      a.lerpVectors(from.pos, ctrl, t);
+      b.lerpVectors(ctrl, to.pos, t);
+      rig.pos.lerpVectors(a, b, t);
+      rig.target.lerpVectors(from.target, to.target, Math.min(1, t + 0.1 * Math.sin(Math.PI * t)));
+      rig.up.copy(from.up).lerp(to.up, smooth(t)).normalize();
+      rig.idle =
+        opts.idle > from.idle
+          ? from.idle + (opts.idle - from.idle) * smooth((t - 0.5) / 0.5)
+          : from.idle * (1 - smooth(t / 0.35));
+    },
+    onComplete: opts.onComplete,
+  });
+  return flight;
+}
 
 /* ------------------------------------------------------------------ lamp & screen levels */
 
@@ -258,14 +337,12 @@ function applyLevels() {
 }
 applyLevels();
 
-/* ------------------------------------------------------------------ pointer, hover, parallax */
+/* ------------------------------------------------------------------ pointer & hover */
 
 const pointer = new THREE.Vector2(9, 9);
 const parallax = new THREE.Vector2();
-const parallaxSmooth = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 let hovered: THREE.Object3D | null = null;
-let lifted: THREE.Object3D | null = null;
 
 function actionRoot(o: THREE.Object3D | null): THREE.Object3D | null {
   while (o) {
@@ -282,32 +359,31 @@ function pick(clientX: number, clientY: number) {
   return hit ? actionRoot(hit.object) : null;
 }
 
-function labelFor(a: Action) {
+function labelFor(root: THREE.Object3D) {
+  const a = root.userData.action as Action;
   if (a.type === 'laptop') return 'Open the laptop';
   if (a.type === 'about') return 'About me · contact';
-  return `${a.project.title} — pick up`;
+  return root.userData.cover ? `Open the ${a.project.title} file` : `Read · ${a.project.title}`;
+}
+
+function liftTo(root: THREE.Object3D, up: boolean) {
+  gsap.to(root.position, { y: root.userData.baseY + (up ? 0.01 : 0), duration: 0.8, ease: 'sine.inOut', overwrite: 'auto' });
+  gsap.to(root.rotation, { z: up ? 0.02 : 0, duration: 0.9, ease: 'sine.inOut', overwrite: 'auto' });
 }
 
 function setHovered(root: THREE.Object3D | null, x = 0, y = 0) {
   if (root !== hovered) {
-    if (hovered && hovered !== laptop.root && hovered !== lifted) {
-      gsap.to(hovered.position, { y: hovered.userData.baseY, duration: 0.7, ease: 'sine.inOut' });
-      gsap.to(hovered.rotation, { z: 0, duration: 0.7, ease: 'sine.inOut' });
-    }
+    if (hovered && hovered !== laptop.root) liftTo(hovered, false);
     hovered = root;
-    if (root && root !== laptop.root) {
-      gsap.to(root.position, { y: root.userData.baseY + 0.012, duration: 0.7, ease: 'sine.out' });
-      gsap.to(root.rotation, { z: 0.025, duration: 0.9, ease: 'sine.out' });
-    }
+    if (root && root !== laptop.root) liftTo(root, true);
   }
   canvas.style.cursor = root ? 'pointer' : 'default';
-  ui.setTooltip(root && !isTouch ? labelFor(root.userData.action) : null, x, y);
+  ui.setTooltip(root && !isTouch ? labelFor(root) : null, x, y);
 }
 
 canvas.addEventListener('pointermove', (e) => {
   parallax.set((e.clientX / innerWidth) * 2 - 1, (e.clientY / innerHeight) * 2 - 1);
-  if (state !== 'desk') return;
-  setHovered(pick(e.clientX, e.clientY), e.clientX, e.clientY);
+  if (state === 'desk') setHovered(pick(e.clientX, e.clientY), e.clientX, e.clientY);
 });
 canvas.addEventListener('pointerleave', () => {
   parallax.set(0, 0);
@@ -317,48 +393,30 @@ canvas.addEventListener('pointerleave', () => {
 let downAt = { x: 0, y: 0 };
 canvas.addEventListener('pointerdown', (e) => (downAt = { x: e.clientX, y: e.clientY }));
 canvas.addEventListener('pointerup', (e) => {
-  if (state !== 'desk') return;
-  if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 8) return;
+  if (state !== 'desk' || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 8) return;
   const root = pick(e.clientX, e.clientY);
   if (!root) return;
-  const a = root.userData.action as Action;
   setHovered(null);
-  if (a.type === 'laptop') enterLaptop();
-  else pickUpDocument(root, a);
+  if ((root.userData.action as Action).type === 'laptop') enterLaptop();
+  else openDocument(root);
 });
 
-/* ------------------------------------------------------------------ transitions */
-
-/** Camera move with a soft ease; the look-at point travels on its own slightly lagging curve. */
-function flyCamera(toPos: THREE.Vector3, toTarget: THREE.Vector3, duration: number, onComplete?: () => void) {
-  const fromPos = camera.position.clone();
-  const fromTarget = camTarget.clone();
-  const p = { t: 0, u: 0 };
-  const d = reducedMotion ? 0.01 : duration;
-  const tl = gsap.timeline({ onComplete });
-  tl.to(p, { t: 1, duration: d, ease: 'power3.inOut' }, 0);
-  tl.to(p, { u: 1, duration: d * 0.92, ease: 'power2.inOut' }, d * 0.04);
-  tl.eventCallback('onUpdate', () => {
-    camera.position.lerpVectors(fromPos, toPos, p.t);
-    camTarget.lerpVectors(fromTarget, toTarget, p.u);
-    camera.lookAt(camTarget);
-  });
-  return tl;
-}
+/* ------------------------------------------------------------------ laptop */
 
 function enterLaptop() {
   state = 'zooming';
   ui.setHint(false);
   const pose = laptopPose();
-  flyCamera(pose.position, pose.target, 2.1, () => {
-    state = 'laptop';
-    // settle on the exact final pose before measuring the display: the loop stops rendering in this state
-    camera.position.copy(pose.position);
-    camTarget.copy(pose.target);
-    camera.lookAt(camTarget);
-    camera.updateMatrixWorld();
-    pipeline.render(performance.now() / 1000);
-    ui.showOS(innerWidth < 700 ? null : displayRect());
+  flyTo(pose, 2.3, {
+    idle: 0,
+    arc: 0.04,
+    onComplete: () => {
+      state = 'laptop';
+      setRig(pose);
+      updateCamera(0);
+      renderFrame(performance.now() / 1000);
+      ui.showOS(innerWidth < 700 ? null : displayRect());
+    },
   });
 }
 
@@ -366,41 +424,67 @@ function exitLaptop() {
   if (state !== 'laptop') return;
   ui.hideOS();
   state = 'zooming';
-  flyCamera(homePosition(), HOME_TARGET, 1.9, () => {
-    state = 'desk';
-    ui.setHint(true);
-  });
+  flyTo(homePose(), 2.1, { idle: 1, arc: 0.05, onComplete: backAtDesk });
 }
 
-function pickUpDocument(root: THREE.Object3D, a: Action) {
+function backAtDesk() {
+  state = 'desk';
+  ui.setHint(true);
+}
+
+/* ------------------------------------------------------------------ documents: fly onto the page, then read it in place */
+
+let openDoc: { root: THREE.Object3D; plane: DocPlane; aligned: boolean } | null = null;
+
+function openDocument(root: THREE.Object3D) {
+  const a = root.userData.action as Action;
+  // the mug and the card both lead to the business card
+  const target = a.type === 'about' ? items.card : root;
+  const plane = target.userData.docPlane as DocPlane;
+  const aligned = a.type === 'project';
   state = 'doc';
-  lifted = root;
-  root.userData.rest = { pos: root.position.clone(), rot: root.rotation.clone() };
-  root.userData.rest.pos.y = root.userData.baseY ?? 0;
-  root.userData.rest.rot.z = 0;
-  const toCam = camera.position.clone().sub(root.position).multiplyScalar(0.22);
+  ui.setHint(false);
+  // settle the hover lift; the pose is computed for the resting position
+  gsap.killTweensOf(root.position);
+  gsap.killTweensOf(root.rotation);
+  gsap.to(root.position, { y: root.userData.baseY, duration: 0.6, ease: 'sine.inOut' });
+  gsap.to(root.rotation, { z: 0, duration: 0.6, ease: 'sine.inOut' });
+  const liveY = root.position.y, liveZ = root.rotation.z;
+  root.position.y = root.userData.baseY;
+  root.rotation.z = 0;
+  const pose = docPose(plane, docMargin(aligned));
+  root.position.y = liveY;
+  root.rotation.z = liveZ;
+  openDoc = { root, plane, aligned };
+
+  const cover = target.userData.cover as THREE.Object3D | undefined;
   const tl = gsap.timeline();
-  tl.to(root.position, { y: 0.07, duration: 0.45, ease: 'power2.out' }, 0);
-  tl.to(root.position, { x: root.position.x + toCam.x, z: root.position.z + toCam.z, duration: 1.1, ease: 'power3.inOut' }, 0.05);
-  tl.to(root.position, { y: 0.12, duration: 0.7, ease: 'sine.inOut' }, 0.45);
-  tl.to(root.rotation, { x: 0.62, duration: 1.1, ease: 'sine.inOut' }, 0.05);
-  tl.to(root.rotation, { z: -0.04, duration: 0.6, ease: 'sine.inOut', yoyo: true, repeat: 1 }, 0.1);
-  tl.call(() => (a.type === 'project' ? ui.openProject(a.project) : ui.openAbout()), [], 0.6);
+  tl.add(
+    flyTo(pose, 2.0, {
+      idle: 0,
+      arc: 0.06,
+      onComplete: () => {
+        setRig(pose);
+        updateCamera(0);
+        renderFrame(performance.now() / 1000);
+        const rect = aligned ? projectRect(plane.mesh, plane.w, plane.h, 'xz') : null;
+        if (a.type === 'project') ui.openProject(a.project, rect);
+        else ui.openAbout(null);
+      },
+    }),
+    0,
+  );
+  // a folder swings open while the camera settles over it
+  if (cover) tl.to(cover.rotation, { z: Math.PI * 0.985, duration: 1.3, ease: 'power2.inOut' }, 0.75);
 }
 
-function putDocumentBack() {
-  if (!lifted) return;
-  const root = lifted;
-  const rest = root.userData.rest as { pos: THREE.Vector3; rot: THREE.Euler };
-  const tl = gsap.timeline({
-    onComplete: () => {
-      lifted = null;
-      state = 'desk';
-    },
-  });
-  tl.to(root.position, { x: rest.pos.x, z: rest.pos.z, duration: 1.0, ease: 'power3.inOut' }, 0);
-  tl.to(root.position, { y: rest.pos.y, duration: 1.0, ease: 'power2.in' }, 0);
-  tl.to(root.rotation, { x: rest.rot.x, z: 0, duration: 0.95, ease: 'sine.inOut' }, 0);
+function closeDocument() {
+  if (!openDoc) return;
+  const cover = (openDoc.root.userData.cover ?? null) as THREE.Object3D | null;
+  openDoc = null;
+  state = 'zooming';
+  if (cover) gsap.to(cover.rotation, { z: 0, duration: 1.1, ease: 'power2.inOut', delay: 0.1 });
+  gsap.delayedCall(cover ? 0.35 : 0.1, () => flyTo(homePose(), 2.0, { idle: 1, arc: 0.06, onComplete: backAtDesk }));
 }
 
 /* ------------------------------------------------------------------ resize */
@@ -414,63 +498,87 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   pipeline.setSize(innerWidth, innerHeight);
   dust.mat.uniforms.uScale.value = innerHeight * Math.min(devicePixelRatio, 1.5);
+  if (state === 'desk') setRig(homePose());
   if (state === 'laptop') {
-    const pose = laptopPose();
-    camera.position.copy(pose.position);
-    camTarget.copy(pose.target);
-    camera.lookAt(camTarget);
-    pipeline.render(performance.now() / 1000);
+    setRig(laptopPose());
+    updateCamera(0);
+    renderFrame(performance.now() / 1000);
     ui.showOS(innerWidth < 700 ? null : displayRect());
+  }
+  if (state === 'doc' && openDoc && ui.panelOpen) {
+    setRig(docPose(openDoc.plane, docMargin(openDoc.aligned)));
+    updateCamera(0);
+    if (openDoc.aligned) ui.placeSheet(projectRect(openDoc.plane.mesh, openDoc.plane.w, openDoc.plane.h, 'xz'));
   }
 });
 
-/* ------------------------------------------------------------------ loop */
+/* ------------------------------------------------------------------ frame */
 
-const tmp = new THREE.Vector3();
-const ZERO2 = new THREE.Vector2();
-const forward = new THREE.Vector3();
+const parallaxSmooth = new THREE.Vector2();
 const attention = new THREE.Vector3();
+const attentionGoal = new THREE.Vector3();
+const lookAt = new THREE.Vector3();
+const fwd = new THREE.Vector3();
+const right = new THREE.Vector3();
+const camUp = new THREE.Vector3();
+const tmp = new THREE.Vector3();
 let focusDepth = homeDistance();
-let frames = 0, slowFrames = 0, last = performance.now(), degraded = false;
 
-renderer.setAnimationLoop(() => {
-  const now = performance.now();
-  const time = now / 1000;
-  const dt = now - last;
-  last = now;
-  if (state === 'laptop') return; // the HTML OS covers the screen and nothing moves
+/** Frame-rate independent exponential smoothing factor. */
+const damp = (rate: number, dt: number) => 1 - Math.exp(-rate * dt);
 
-  if (state === 'desk' || state === 'doc') {
-    // soft parallax + a slow handheld "breathing" drift
-    parallaxSmooth.lerp(state === 'desk' && !reducedMotion ? parallax : ZERO2, 0.035);
-    const right = new THREE.Vector3().crossVectors(HOME_DIR, camera.up).normalize().negate();
-    const breathe = reducedMotion ? 0 : 1;
-    camera.position
-      .copy(homePosition())
-      .addScaledVector(right, parallaxSmooth.x * 0.045 + Math.sin(time * 0.31) * 0.004 * breathe)
-      .addScaledVector(camera.up, -parallaxSmooth.y * 0.028 + Math.sin(time * 0.23 + 1) * 0.003 * breathe);
-    // the eye drifts a little toward what you're pointing at
-    attention.copy(HOME_TARGET);
-    if (hovered && hovered !== laptop.root) attention.lerp(hovered.position, 0.12);
-    camTarget.lerp(attention, 0.03);
-    camera.lookAt(camTarget);
-  }
+function updateCamera(dt: number) {
+  const time = performance.now() / 1000;
+  const w = reducedMotion ? 0 : rig.idle;
 
-  // rack focus: on the lifted document, otherwise on what the camera looks at
-  camera.getWorldDirection(forward);
-  const focusPoint = lifted ? lifted.position : camTarget;
-  focusDepth += (tmp.copy(focusPoint).sub(camera.position).dot(forward) - focusDepth) * 0.07;
+  parallaxSmooth.lerp(parallax, damp(2.2, dt));
+  attentionGoal.set(0, 0, 0);
+  if (state === 'desk' && hovered && hovered !== laptop.root) attentionGoal.copy(hovered.position).sub(HOME_TARGET).multiplyScalar(0.08);
+  attention.lerp(attentionGoal, damp(1.6, dt));
+
+  fwd.copy(rig.target).sub(rig.pos).normalize();
+  right.crossVectors(fwd, rig.up).normalize();
+  camUp.crossVectors(right, fwd).normalize();
+
+  camera.position
+    .copy(rig.pos)
+    .addScaledVector(right, (parallaxSmooth.x * 0.045 + Math.sin(time * 0.31) * 0.004) * w)
+    .addScaledVector(camUp, (-parallaxSmooth.y * 0.028 + Math.sin(time * 0.23 + 1) * 0.003) * w);
+  camera.up.copy(rig.up);
+  lookAt.copy(rig.target).addScaledVector(attention, w);
+  camera.lookAt(lookAt);
+  camera.updateMatrixWorld();
+
+  // rack focus on whatever the rig is looking at
+  const depth = tmp.copy(rig.target).sub(camera.position).dot(fwd);
+  focusDepth = dt === 0 ? depth : focusDepth + (depth - focusDepth) * damp(4, dt);
   pipeline.setFocus(focusDepth);
+}
 
+function renderFrame(time: number) {
   dust.mat.uniforms.uTime.value = time;
   steam.update(time);
   candle.update(time);
   pipeline.render(time);
+}
 
-  // adaptive quality: if the first seconds after the intro are slow, drop the heaviest passes
+let frames = 0, slowFrames = 0, last = performance.now(), degraded = false;
+const trace: number[][] | null = location.search.includes('debug') ? [] : null;
+
+// Driven by GSAP's ticker so tweens update before the frame that draws them.
+gsap.ticker.add(() => {
+  const now = performance.now();
+  const dtMs = now - last;
+  last = now;
+  if (state === 'laptop') return; // the HTML OS covers the screen and nothing moves
+  updateCamera(Math.min(dtMs, 50) / 1000);
+  renderFrame(now / 1000);
+  if (trace) trace.push([Math.round(now), +camera.position.x.toFixed(4), +camera.position.y.toFixed(4), +camera.position.z.toFixed(4)]);
+
+  // adaptive quality: if the first seconds at the desk are slow, drop the heaviest passes
   if (state === 'desk' && !degraded && frames < 120) {
     frames++;
-    if (dt > 34) slowFrames++;
+    if (dtMs > 34) slowFrames++;
     if (frames === 120 && slowFrames > 60) {
       degraded = true;
       pipeline.degrade();
@@ -479,7 +587,7 @@ renderer.setAnimationLoop(() => {
 });
 
 if (location.search.includes('debug')) {
-  Object.assign(window, { __dbg: { camera, camTarget, getState: () => state, displayRect, laptopPose } });
+  Object.assign(window, { __dbg: { camera, rig, trace, getState: () => state, displayRect, laptopPose } });
 }
 
 /* ------------------------------------------------------------------ cinematic intro */
@@ -490,26 +598,21 @@ pipeline.render(0);
 ui.hideLoader();
 state = 'intro';
 
-const end = homePosition();
-const start = HOME_TARGET.clone()
-  .addScaledVector(new THREE.Vector3(-0.28, 0.42, 0.86).normalize(), homeDistance() * 1.45);
-camera.position.copy(start);
-camTarget.copy(HOME_TARGET).add(new THREE.Vector3(0, 0.05, 0));
-camera.lookAt(camTarget);
+setRig({
+  pos: HOME_TARGET.clone().addScaledVector(new THREE.Vector3(-0.28, 0.42, 0.86).normalize(), homeDistance() * 1.45),
+  target: HOME_TARGET.clone().add(new THREE.Vector3(0, 0.05, 0)),
+  up: UP.clone(),
+});
+rig.idle = 0;
+updateCamera(0);
 laptop.lid.rotation.x = 1.5;
 
-const k = reducedMotion ? 0.01 : 1;
-const intro = gsap.timeline({
-  onUpdate: applyLevels,
-  onComplete: () => {
-    state = 'desk';
-    ui.setHint(true);
-  },
-});
+const k = reducedMotion ? 0.6 : 1; // shorter intro, but still a real camera move
+const intro = gsap.timeline({ onUpdate: applyLevels, onComplete: backAtDesk });
 intro.to(pipeline.grade.uniforms.uFade, { value: 1, duration: 2.4 * k, ease: 'sine.inOut' }, 0);
 intro.to(level, { ambient: 1, duration: 3 * k, ease: 'sine.inOut' }, 0);
 intro.to(level, { candle: 1, duration: 1.6 * k, ease: 'sine.out' }, 0.3 * k);
-intro.add(flyCamera(end, HOME_TARGET, 5.2 * k), 0.1 * k);
+intro.add(flyTo(homePose(), 5.4 * k, { idle: 1, ease: 'sine.inOut' }), 0.1 * k);
 // lamp clicks on with a little tungsten flicker
 intro.to(level, { lamp: 0.55, duration: 0.05 * k }, 1.1 * k);
 intro.to(level, { lamp: 0.08, duration: 0.07 * k }, 1.16 * k);
