@@ -30,3 +30,4 @@ In the repo settings, set **Pages → Source: GitHub Actions**.
 ## Credits
 
 Wood texture (`oak_veneer_01`) and HDRI (`brown_photostudio_02`) from [Poly Haven](https://polyhaven.com), CC0.
+Hand model (`public/models/hand-right.glb`): the `generic-hand` profile from [webxr-input-profiles](https://github.com/immersive-web/webxr-input-profiles), MIT.

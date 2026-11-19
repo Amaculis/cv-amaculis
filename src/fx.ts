@@ -70,7 +70,7 @@ export interface Pipeline {
 }
 
 /**
- * Builds the post stack. `fxObjects` (light shaft, dust, steam, backdrop) are hidden while the
+ * Builds the post stack. `fxObjects` (light shaft, dust, steam, window glass) are hidden while the
  * depth-based passes (AO, depth of field) render their depth/normal buffers, so the transparent
  * effects do not pollute depth.
  */
@@ -145,56 +145,6 @@ export function createPipeline(
 }
 
 /* ------------------------------------------------------------------ atmosphere */
-
-/** Out-of-focus city lights far behind the desk: the "window at night" of a cozy room. */
-export function createBokehBackdrop() {
-  const W = 2048, H = 1024;
-  const c = document.createElement('canvas');
-  c.width = W;
-  c.height = H;
-  const ctx = c.getContext('2d')!;
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#07090d');
-  bg.addColorStop(0.55, '#0d0b0a');
-  bg.addColorStop(1, '#050404');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-
-  // faint window frame glow
-  const win = ctx.createRadialGradient(W * 0.68, H * 0.38, 10, W * 0.68, H * 0.38, W * 0.45);
-  win.addColorStop(0, 'rgba(40,60,90,0.35)');
-  win.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = win;
-  ctx.fillRect(0, 0, W, H);
-
-  let seed = 7;
-  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const palette = ['255,170,90', '255,196,120', '255,140,70', '120,170,255', '255,220,170', '90,200,190'];
-  for (let i = 0; i < 140; i++) {
-    const x = W * (0.3 + rnd() * 0.7);
-    const y = H * (0.25 + rnd() * 0.5);
-    const r = 5 + rnd() * rnd() * 30;
-    const col = palette[Math.floor(rnd() * (rnd() < 0.7 ? 3 : palette.length))];
-    const a = 0.12 + rnd() * 0.4;
-    const g = ctx.createRadialGradient(x, y, r * 0.2, x, y, r);
-    g.addColorStop(0, `rgba(${col},${a})`);
-    g.addColorStop(0.8, `rgba(${col},${a * 0.9})`);
-    g.addColorStop(1, `rgba(${col},0)`);
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(9, 4.5),
-    new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(1.5, 1.5, 1.5), fog: false, depthWrite: false }),
-  );
-  mesh.position.set(0, -0.1, -3.4);
-  mesh.raycast = () => {};
-  return mesh;
-}
 
 /** Soft additive cone that reads as light scattering in dusty air under the lamp. */
 export function createLightShaft(length: number, radius: number) {

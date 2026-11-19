@@ -27,6 +27,13 @@ export function createLamp(reach = 0.5) {
   const baseCap = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.026, 0.02, 32), brass);
   baseCap.position.y = 0.03;
   root.add(baseCap);
+  // push-button switch on the base, on the side facing the room
+  const button = new THREE.Mesh(new THREE.CylinderGeometry(0.0085, 0.0095, 0.007, 32), brass);
+  button.position.set(0.006, 0.022 + 0.0035, 0.052);
+  root.add(button);
+  const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.002, 32), metal);
+  ring.position.set(0.006, 0.023, 0.052);
+  root.add(ring);
 
   const pivot = new THREE.Vector3(0, 0.04, 0);
   const elbow = new THREE.Vector3(-0.03, 0.27, 0);
@@ -114,7 +121,7 @@ export function createLamp(reach = 0.5) {
   shade.castShadow = inner.castShadow = bulb.castShadow = false;
   root.add(contactShadow(0.22, 0.22, 0.8));
 
-  return { root, headGroup, spot, glow, bulbMat, innerMat, beamLength: head.distanceTo(aim) * 1.08 };
+  return { root, headGroup, spot, glow, bulbMat, innerMat, button, beamLength: head.distanceTo(aim) * 1.08 };
 }
 
 /* ------------------------------------------------------------------ books */
@@ -144,7 +151,7 @@ export function createBooks() {
 
 /* ------------------------------------------------------------------ candle */
 
-function flameTexture() {
+export function flameTexture() {
   const c = document.createElement('canvas');
   c.width = 64;
   c.height = 128;
@@ -199,6 +206,8 @@ export function createCandle() {
   return {
     root,
     fx: [flame],
+    /** top of the wick, in root space */
+    wickTop: new THREE.Vector3(0, 0.053, 0),
     setOn(v: number) {
       on = v;
     },
@@ -207,6 +216,84 @@ export function createCandle() {
       light.intensity = 0.09 * f * on;
       flame.scale.set(0.011 * (0.94 + (f - 0.86) * 0.7) * on, 0.026 * f * on + 0.0001, 1);
       flame.position.x = Math.sin(time * 2.1) * 0.0008;
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ smoke wisps */
+
+function smokeTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.35)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+/** A thin curl of smoke, e.g. from a snuffed wick or a shaken-out match. World-space particles. */
+export function createSmoke(count = 36) {
+  const group = new THREE.Group();
+  const map = smokeTexture();
+  const parts = Array.from({ length: count }, () => {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map, color: '#9a9088', transparent: true, opacity: 0, depthWrite: false }));
+    s.raycast = () => {};
+    s.scale.setScalar(0.0001);
+    group.add(s);
+    return { s, age: 0, life: 0, origin: new THREE.Vector3(), seed: 0, strength: 0 };
+  });
+  let next = 0;
+  const sources: { pos: THREE.Vector3; until: number; acc: number; strength: number }[] = [];
+  let clock = 0;
+
+  function spawn(pos: THREE.Vector3, strength: number) {
+    const p = parts[next++ % count];
+    p.age = 0;
+    p.life = 2.2 + Math.random() * 1.2;
+    p.origin.copy(pos);
+    p.seed = Math.random() * 100;
+    p.strength = strength;
+  }
+
+  return {
+    group,
+    /** emit a rising wisp from `pos` for `seconds` */
+    puff(pos: THREE.Vector3, seconds: number, strength = 1) {
+      sources.push({ pos: pos.clone(), until: clock + seconds, acc: 0, strength });
+    },
+    update(dt: number) {
+      clock += dt;
+      for (let i = sources.length - 1; i >= 0; i--) {
+        const src = sources[i];
+        const left = src.until - clock;
+        if (left <= 0) {
+          sources.splice(i, 1);
+          continue;
+        }
+        src.acc += dt * 16;
+        while (src.acc >= 1) {
+          src.acc -= 1;
+          spawn(src.pos, src.strength * Math.min(1, left / 0.8));
+        }
+      }
+      for (const p of parts) {
+        if (p.age >= p.life) {
+          p.s.material.opacity = 0;
+          continue;
+        }
+        p.age += dt;
+        const t = p.age / p.life;
+        const rise = 0.16 * t + 0.02 * t * t;
+        const sway = Math.sin(p.seed + p.age * 2.3) * 0.012 * t + Math.sin(p.seed * 1.7 + p.age * 5.1) * 0.004 * t;
+        p.s.position.set(p.origin.x + sway, p.origin.y + rise, p.origin.z + Math.cos(p.seed + p.age * 1.9) * 0.008 * t);
+        p.s.scale.setScalar(0.006 + 0.05 * t);
+        p.s.material.opacity = 0.2 * p.strength * Math.min(1, t * 8) * (1 - t) * (1 - t);
+        p.s.material.rotation = p.seed + t * 1.5;
+      }
     },
   };
 }

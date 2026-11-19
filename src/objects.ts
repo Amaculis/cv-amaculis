@@ -11,7 +11,12 @@ import {
 } from './canvasTextures';
 
 /** Every clickable object carries `userData.action` on its root group. */
-export type Action = { type: 'laptop' } | { type: 'project'; project: Project } | { type: 'about' };
+export type Action =
+  | { type: 'laptop' }
+  | { type: 'project'; project: Project }
+  | { type: 'about' }
+  | { type: 'candle' }
+  | { type: 'lamp' };
 
 /** A flat document the camera can fly onto: the mesh's local X is the page width, local -Z points to the top of the page. */
 export interface DocPlane {

@@ -18,8 +18,10 @@ import {
   createPen,
   createStickyNote,
 } from './objects';
-import { createBooks, createCandle, createLamp } from './cozy';
-import { createBokehBackdrop, createDust, createLightShaft, createPipeline, createSteam } from './fx';
+import { createBooks, createCandle, createLamp, createSmoke } from './cozy';
+import { createHand, POSES } from './hand';
+import { createDust, createLightShaft, createPipeline, createSteam } from './fx';
+import { createRoom } from './room';
 import { UI } from './ui';
 
 const BASE = import.meta.env.BASE_URL;
@@ -81,18 +83,19 @@ scene.environment = hdr; // only for subtle reflections on metal and lacquer
 scene.environmentIntensity = 0;
 scene.environmentRotation.y = 1.2;
 
-// cool moonlight from a window at the back right: separates silhouettes from the dark
+// cool light from the homelab screens and LEDs at the back right: separates silhouettes from the dark
 const moon = new THREE.DirectionalLight('#8eaeff', 0);
 moon.position.set(1.6, 1.3, -1.4);
 scene.add(moon);
 
-const LIGHT = { lamp: 1.15, moon: 0.32, env: 0.07, screen: 1.6 };
+const LIGHT = { lamp: 1.15, moon: 0.32, env: 0.07, screen: 1.6, spill: 0.18 };
 
 /* ------------------------------------------------------------------ objects */
 
 scene.add(createDesk({ diff, nor, rough }));
-const backdrop = createBokehBackdrop();
-scene.add(backdrop);
+// the desk stands against a wall; its back half is a small homelab
+const room = createRoom(hdr);
+scene.add(room.group);
 
 const laptop = createLaptop(renderer);
 const screenLight = new THREE.RectAreaLight('#a8c6ff', 0, DISPLAY.w, DISPLAY.h);
@@ -105,8 +108,18 @@ const shaftRadius = Math.tan(lamp.spot.angle * 0.5) * lamp.beamLength;
 const shaft = createLightShaft(lamp.beamLength, shaftRadius);
 const dust = createDust(lamp.beamLength, shaftRadius);
 lamp.headGroup.add(shaft.mesh, dust.points);
+// light leaking out of the back of the shade: a warm halo on the wall behind the lamp
+const spill = new THREE.PointLight('#ffb36b', 0, 1.6, 2);
+spill.position.set(0, 0.12, -0.22);
+lamp.headGroup.add(spill);
+shaft.mesh.raycast = dust.points.raycast = () => {}; // the beam must not count as "the lamp" for clicks
+lamp.root.userData.action = { type: 'lamp' } satisfies Action;
 
 const candle = createCandle();
+candle.root.userData.action = { type: 'candle' } satisfies Action;
+const smoke = createSmoke();
+const hand = createHand();
+scene.add(smoke.group, hand.root);
 const steam = createSteam();
 
 const interactive: THREE.Object3D[] = [laptop.root];
@@ -180,7 +193,7 @@ function applyLayout() {
 
 /* ------------------------------------------------------------------ post-processing */
 
-const pipeline = createPipeline(renderer, scene, camera, [shaft.mesh, dust.points, steam.group, backdrop, ...candle.fx], !isTouch);
+const pipeline = createPipeline(renderer, scene, camera, [shaft.mesh, dust.points, steam.group, ...room.fx, smoke.group, ...candle.fx, ...hand.fx], !isTouch);
 
 /* ------------------------------------------------------------------ camera framing */
 
@@ -323,6 +336,7 @@ function applyLevels() {
   const l = level.lamp;
   lamp.spot.intensity = LIGHT.lamp * l;
   lamp.glow.intensity = 0.25 * l;
+  spill.intensity = LIGHT.spill * l;
   lamp.bulbMat.color.copy(bulbHot).multiplyScalar(l);
   lamp.innerMat.emissiveIntensity = 0.8 * l;
   shaft.mat.uniforms.uIntensity.value = 0.13 * l;
@@ -334,6 +348,7 @@ function applyLevels() {
   moon.intensity = LIGHT.moon * level.ambient * fill;
   scene.environmentIntensity = LIGHT.env * level.ambient * fill;
   candle.setOn(level.candle);
+  room.setLevel(level.ambient);
 }
 applyLevels();
 
@@ -356,13 +371,16 @@ function pick(clientX: number, clientY: number) {
   pointer.set((clientX / innerWidth) * 2 - 1, -(clientY / innerHeight) * 2 + 1);
   raycaster.setFromCamera(pointer, camera);
   const hit = raycaster.intersectObjects(interactive, true)[0];
-  return hit ? actionRoot(hit.object) : null;
+  const root = hit ? actionRoot(hit.object) : null;
+  return root?.userData.busy ? null : root;
 }
 
 function labelFor(root: THREE.Object3D) {
   const a = root.userData.action as Action;
   if (a.type === 'laptop') return 'Open the laptop';
   if (a.type === 'about') return 'About me · contact';
+  if (a.type === 'candle') return 'Blow out the candle';
+  if (a.type === 'lamp') return 'Switch off the lamp';
   return root.userData.cover ? `Open the ${a.project.title} file` : `Read · ${a.project.title}`;
 }
 
@@ -371,11 +389,14 @@ function liftTo(root: THREE.Object3D, up: boolean) {
   gsap.to(root.rotation, { z: up ? 0.02 : 0, duration: 0.9, ease: 'sine.inOut', overwrite: 'auto' });
 }
 
+/** Papers, folder, mug and card lift a little on hover; the laptop and the lights stay put. */
+const liftable = (o: THREE.Object3D | null): o is THREE.Object3D => !!o && o !== laptop.root && o !== lamp.root && o !== candle.root;
+
 function setHovered(root: THREE.Object3D | null, x = 0, y = 0) {
   if (root !== hovered) {
-    if (hovered && hovered !== laptop.root) liftTo(hovered, false);
+    if (liftable(hovered)) liftTo(hovered, false);
     hovered = root;
-    if (root && root !== laptop.root) liftTo(root, true);
+    if (liftable(root)) liftTo(root, true);
   }
   canvas.style.cursor = root ? 'pointer' : 'default';
   ui.setTooltip(root && !isTouch ? labelFor(root) : null, x, y);
@@ -397,7 +418,10 @@ canvas.addEventListener('pointerup', (e) => {
   const root = pick(e.clientX, e.clientY);
   if (!root) return;
   setHovered(null);
-  if ((root.userData.action as Action).type === 'laptop') enterLaptop();
+  const type = (root.userData.action as Action).type;
+  if (type === 'laptop') enterLaptop();
+  else if (type === 'candle') snuffCandle();
+  else if (type === 'lamp') switchOffLamp();
   else openDocument(root);
 });
 
@@ -487,6 +511,104 @@ function closeDocument() {
   gsap.delayedCall(cover ? 0.35 : 0.1, () => flyTo(homePose(), 2.0, { idle: 1, arc: 0.06, onComplete: backAtDesk }));
 }
 
+/* ------------------------------------------------------------------ put a light out, and a hand puts it back
+   The camera stays where it is: the hand comes in from off-frame, does its job and leaves. */
+
+const xyz = (v: THREE.Vector3) => ({ x: v.x, y: v.y, z: v.z });
+const Y = (d: number) => new THREE.Vector3(0, d, 0);
+
+function snuffCandle() {
+  if (candle.root.userData.busy) return;
+  candle.root.userData.busy = true;
+  const wick = candle.root.localToWorld(candle.wickTop.clone());
+  // the arm comes from the right, a little in front of the books
+  const side = new THREE.Vector3(1, 0, 0.45).normalize();
+  hand.setPose(POSES.hold);
+  hand.aim(side.clone().negate(), 0.35, 0.3, false);
+  const contact = hand.rootFor(wick.clone().add(Y(0.008)).addScaledVector(side, 0.003), 'match', POSES.hold);
+  const near = contact.clone().addScaledVector(side, 0.1).add(Y(0.07));
+  const start = contact.clone().addScaledVector(side, 1.0).add(Y(0.2));
+  const done = () => {
+    hand.park();
+    candle.root.userData.busy = false;
+  };
+
+  const tl = gsap.timeline({ onUpdate: applyLevels, onComplete: done });
+  // the flame gutters and dies, a curl of smoke rises from the wick
+  tl.to(level, { candle: 0.5, duration: 0.07 }, 0);
+  tl.to(level, { candle: 0.75, duration: 0.06 });
+  tl.to(level, { candle: 0, duration: 0.22, ease: 'power2.in' });
+  tl.call(() => smoke.puff(wick, 1.8), [], 0.3);
+  // a match is struck just out of frame: its glow arrives before the hand does
+  tl.call(
+    () => {
+      hand.root.position.copy(start);
+      hand.match.showMatch = 1;
+      hand.match.charred = true;
+    },
+    [],
+    1.5,
+  );
+  tl.to(hand.match, { lit: 2, duration: 0.1, ease: 'power2.out' }, 1.55);
+  tl.to(hand.match, { lit: 1, duration: 0.6, ease: 'sine.out' }, 1.65);
+  tl.to(hand.root.position, { ...xyz(near), duration: 1.8, ease: 'power3.out' }, 1.75);
+  tl.to(hand.root.position, { ...xyz(contact), duration: 0.9, ease: 'sine.inOut' }, 3.45);
+  // the wick catches
+  tl.to(level, { candle: 0.3, duration: 0.25 }, 4.2);
+  tl.to(level, { candle: 0.15, duration: 0.15 });
+  tl.to(level, { candle: 1, duration: 1.0, ease: 'sine.out' });
+  tl.to(hand.root.position, { ...xyz(near), duration: 0.8, ease: 'sine.inOut' }, 4.9);
+  // shake the match out
+  tl.to(hand.pose, { roll: POSES.hold.roll + 0.3, duration: 0.08, yoyo: true, repeat: 5, ease: 'sine.inOut' }, 5.55);
+  tl.to(hand.match, { lit: 0, duration: 0.2, ease: 'power2.in' }, 5.65);
+  tl.call(() => smoke.puff(hand.matchHeadWorld(), 0.7, 0.6), [], 5.85);
+  tl.to(hand.root.position, { ...xyz(start), duration: 1.6, ease: 'power2.in' }, 6.1);
+}
+
+function switchOffLamp() {
+  if (lamp.root.userData.busy) return;
+  lamp.root.userData.busy = true;
+  const btnY = lamp.button.position.y;
+  const press = (at: number, tl: gsap.core.Timeline) => {
+    tl.to(lamp.button.position, { y: btnY - 0.002, duration: 0.06, ease: 'power2.in' }, at);
+    tl.to(lamp.button.position, { y: btnY, duration: 0.12, ease: 'power2.out' }, at + 0.14);
+  };
+  const button = lamp.button.getWorldPosition(new THREE.Vector3()).add(Y(0.0035));
+  // the arm comes from the left, slightly from the front: a left hand
+  const side = new THREE.Vector3(-1, 0, 0.35).normalize();
+  hand.setPose(POSES.relaxed);
+  hand.aim(side.clone().negate(), 0.75, 0.35, true);
+  const contact = hand.rootFor(button, 'index', POSES.point);
+  const hover = contact.clone().add(Y(0.045)).addScaledVector(side, 0.025);
+  const start = contact.clone().addScaledVector(side, 1.0).add(Y(0.25));
+  const done = () => {
+    hand.park();
+    lamp.root.userData.busy = false;
+  };
+
+  const tl = gsap.timeline({ onUpdate: applyLevels, onComplete: done });
+  // click: the filament dies with a little stutter
+  press(0, tl);
+  tl.to(level, { lamp: 0.35, duration: 0.04 }, 0.05);
+  tl.to(level, { lamp: 0.6, duration: 0.05 });
+  tl.to(level, { lamp: 0, duration: 0.16, ease: 'power2.in' });
+  // someone reaches out of the dark for the switch
+  tl.call(() => void hand.root.position.copy(start), [], 1.2);
+  tl.to(hand.root.position, { ...xyz(hover), duration: 1.8, ease: 'power3.out' }, 1.25);
+  tl.to(hand.pose, { ...POSES.point, duration: 1.1, ease: 'sine.inOut' }, 1.6);
+  tl.to(hand.root.position, { ...xyz(contact), duration: 0.2, ease: 'power2.in' }, 3.15);
+  press(3.3, tl);
+  // the lamp flickers back on, as it did at the start
+  tl.to(level, { lamp: 0.55, duration: 0.05 }, 3.38);
+  tl.to(level, { lamp: 0.08, duration: 0.07 }, 3.44);
+  tl.to(level, { lamp: 0.85, duration: 0.05 }, 3.54);
+  tl.to(level, { lamp: 0.35, duration: 0.09 }, 3.61);
+  tl.to(level, { lamp: 1, duration: 0.6, ease: 'sine.out' }, 3.73);
+  tl.to(hand.root.position, { ...xyz(hover), duration: 0.45, ease: 'sine.out' }, 3.5);
+  tl.to(hand.pose, { ...POSES.relaxed, duration: 1.0, ease: 'sine.inOut' }, 3.9);
+  tl.to(hand.root.position, { ...xyz(start), duration: 1.6, ease: 'power2.in' }, 4.0);
+}
+
 /* ------------------------------------------------------------------ resize */
 
 addEventListener('resize', () => {
@@ -559,6 +681,8 @@ function renderFrame(time: number) {
   dust.mat.uniforms.uTime.value = time;
   steam.update(time);
   candle.update(time);
+  hand.update(time);
+  room.update(time, !reducedMotion);
   pipeline.render(time);
 }
 
@@ -572,6 +696,7 @@ gsap.ticker.add(() => {
   last = now;
   if (state === 'laptop') return; // the HTML OS covers the screen and nothing moves
   updateCamera(Math.min(dtMs, 50) / 1000);
+  smoke.update(Math.min(dtMs, 50) / 1000);
   renderFrame(now / 1000);
   if (trace) trace.push([Math.round(now), +camera.position.x.toFixed(4), +camera.position.y.toFixed(4), +camera.position.z.toFixed(4)]);
 
@@ -587,7 +712,7 @@ gsap.ticker.add(() => {
 });
 
 if (location.search.includes('debug')) {
-  Object.assign(window, { __dbg: { camera, rig, trace, getState: () => state, displayRect, laptopPose } });
+  Object.assign(window, { __dbg: { camera, rig, trace, getState: () => state, displayRect, laptopPose, snuffCandle, switchOffLamp, hand } });
 }
 
 /* ------------------------------------------------------------------ cinematic intro */
